@@ -219,3 +219,27 @@ export interface QuizAnswer {
   isCorrect?: boolean;
   pointsEarned?: number;
 }
+
+// Types for Student Dashboard
+export type ActivityType = 'enrollment' | 'lesson_completion' | 'quiz_attempt' | 'certificate_earned';
+
+export interface ActivityItem {
+  id: string; // Can be composite like 'enrollment-123' or a UUID
+  type: ActivityType;
+  title: string; // e.g., "Enrolled in Introduction to Programming" or "Completed Lesson: Variables"
+  courseTitle?: string; // e.g., "Introduction to Programming"
+  timestamp: string; // ISO date string
+  // Optional fields based on type
+  lessonTitle?: string;
+  quizTitle?: string;
+  score?: number; // For quiz_attempt
+}
+
+export interface CertificateItem {
+  id: string; // Could be enrollmentId or a dedicated certificate ID
+  courseId: number;
+  courseTitle: string;
+  instructorName: string; // Denormalized for easier display
+  completionDate: string; // ISO date string
+  certificateUrl?: string; // Link to the certificate (if applicable)
+}

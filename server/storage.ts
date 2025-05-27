@@ -51,11 +51,19 @@ export interface IStorage {
   getLessonProgress(userId: number, lessonId: number): Promise<LessonProgress | undefined>;
   updateLessonProgress(progress: InsertLessonProgress): Promise<LessonProgress>;
   getUserStats(userId: number): Promise<UserStats>;
+  getUserActivity(userId: number, limit?: number): Promise<ActivityItem[]>; // Student dashboard
+  getUserCertificates(userId: number): Promise<CertificateItem[]>; // Student dashboard
   
   // Quiz attempts
   createQuizAttempt(attempt: InsertQuizAttempt): Promise<QuizAttempt>;
   getQuizAttempts(userId: number, quizId: number): Promise<QuizAttempt[]>;
+
+  // Instructor dashboard
+  deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }>;
 }
+
+// Import new types from schema
+import { ActivityItem, CertificateItem } from "@shared/schema";
 
 export class MemStorage implements IStorage {
   private users: Map<number, User> = new Map();
@@ -555,6 +563,64 @@ export class MemStorage implements IStorage {
     return Array.from(this.quizAttempts.values())
       .filter(attempt => attempt.userId === userId && attempt.quizId === quizId)
       .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
+  }
+
+  async getUserActivity(userId: number, limit = 10): Promise<ActivityItem[]> {
+    // Mock implementation for MemStorage
+    const activities: ActivityItem[] = [
+      { id: '1', type: 'enrollment', title: 'Enrolled in The Complete Web Developer Course 2.0', courseTitle: 'The Complete Web Developer Course 2.0', timestamp: new Date(Date.now() - 86400000 * 2).toISOString() },
+      { id: '2', type: 'lesson_completion', title: 'Completed Lesson: Introduction to HTML', courseTitle: 'The Complete Web Developer Course 2.0', lessonTitle: 'Introduction to HTML', timestamp: new Date(Date.now() - 86400000).toISOString() },
+      { id: '3', type: 'quiz_attempt', title: 'Attempted Quiz: HTML Basics', courseTitle: 'The Complete Web Developer Course 2.0', quizTitle: 'HTML Basics', score: 85, timestamp: new Date().toISOString() },
+    ];
+    return activities.slice(0, limit);
+  }
+
+  async getUserCertificates(userId: number): Promise<CertificateItem[]> {
+    // Mock implementation for MemStorage
+    const userEnrollments = Array.from(this.enrollments.values()).filter(e => e.userId === userId && e.progress === 100);
+    const certificates: CertificateItem[] = [];
+    for (const enrollment of userEnrollments) {
+      const course = this.courses.get(enrollment.courseId);
+      if (course) {
+        const instructor = this.users.get(course.instructorId);
+        certificates.push({
+          id: `cert-${course.id}-${userId}`,
+          courseId: course.id,
+          courseTitle: course.title,
+          instructorName: instructor ? `${instructor.firstName} ${instructor.lastName}` : 'N/A',
+          completionDate: new Date().toISOString(), // Mock completion date
+          certificateUrl: `/certificates/course/${course.id}/user/${userId}`,
+        });
+      }
+    }
+    return certificates;
+  }
+
+  async deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }> {
+    const course = this.courses.get(courseId);
+    if (!course) {
+      return { success: false, message: "Course not found." };
+    }
+    if (course.instructorId !== instructorId) {
+      return { success: false, message: "You are not authorized to delete this course." };
+    }
+    // Check for enrollments (simplified)
+    const hasEnrollments = Array.from(this.enrollments.values()).some(e => e.courseId === courseId);
+    if (hasEnrollments) {
+        // For MemStorage, we'll allow deletion but in real DB might prevent or archive
+        console.warn(`Course ${courseId} has enrollments but is being deleted in MemStorage.`);
+    }
+
+    this.courses.delete(courseId);
+    // Also delete related lessons and quizzes (simplified)
+    this.lessons.forEach((lesson, id) => {
+      if (lesson.courseId === courseId) this.lessons.delete(id);
+    });
+    this.quizzes.forEach((quiz, id) => {
+        const lesson = Array.from(this.lessons.values()).find(l => l.id === quiz.lessonId && l.courseId === courseId);
+        if(lesson) this.quizzes.delete(id);
+    });
+    return { success: true };
   }
 }
 
@@ -1431,8 +1497,78 @@ export class DatabaseStorage implements IStorage {
       quizId: attempt.quiz_id,
       score: attempt.score,
       answers: attempt.answers,
-      completedAt: attempt.completed_at
+      completedAt: attempt.completed_at,
+      // Ensure these fields are added if your schema has them
+      totalQuestions: attempt.total_questions, 
+      correctAnswers: attempt.correct_answers,
+      passed: attempt.passed,
+      timeSpent: attempt.time_spent,
     }));
+  }
+
+  async getUserActivity(userId: number, limit = 10): Promise<ActivityItem[]> {
+    // Mocked DB implementation - returns a fixed list for now
+    // A real implementation would query enrollments, lesson_progress, quiz_attempts, etc.
+    // aggregate them, sort by timestamp, and map to ActivityItem[]
+    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate DB call
+    return [
+      { id: `enrollment-${userId}-1`, type: 'enrollment', title: 'Enrolled in Advanced JavaScript', courseTitle: 'Advanced JavaScript', timestamp: new Date(Date.now() - 86400000 * 5).toISOString() },
+      { id: `lesson-${userId}-1`, type: 'lesson_completion', title: 'Completed: Asynchronous JavaScript', courseTitle: 'Advanced JavaScript', lessonTitle: 'Asynchronous JavaScript', timestamp: new Date(Date.now() - 86400000 * 3).toISOString() },
+      { id: `quiz-${userId}-1`, type: 'quiz_attempt', title: 'Attempted: Promises Quiz', courseTitle: 'Advanced JavaScript', quizTitle: 'Promises Quiz', score: 92, timestamp: new Date(Date.now() - 86400000 * 2).toISOString() },
+      { id: `certificate-${userId}-1`, type: 'certificate_earned', title: 'Earned Certificate: Advanced JavaScript', courseTitle: 'Advanced JavaScript', timestamp: new Date(Date.now() - 86400000).toISOString() },
+    ].slice(0, limit);
+  }
+
+  async getUserCertificates(userId: number): Promise<CertificateItem[]> {
+    const completedEnrollments = await sql`
+      SELECT 
+        e.id as enrollment_id,
+        c.id as course_id, 
+        c.title as course_title, 
+        u.first_name as instructor_first_name, 
+        u.last_name as instructor_last_name,
+        e.enrolled_at as completion_date -- Using enrolled_at as placeholder for completion date
+      FROM enrollments e
+      JOIN courses c ON e.course_id = c.id
+      JOIN users u ON c.instructor_id = u.id
+      WHERE e.user_id = ${userId} AND e.progress = 100
+    `;
+
+    return completedEnrollments.map((row: any) => ({
+      id: `cert-${row.course_id}-${userId}`, // Or use enrollment_id if preferred
+      courseId: row.course_id,
+      courseTitle: row.course_title,
+      instructorName: `${row.instructor_first_name} ${row.instructor_last_name}`,
+      completionDate: new Date(row.completion_date).toISOString(), // Ensure this is the actual completion date
+      certificateUrl: `/placeholder/certificate/${row.enrollment_id}`, // Placeholder URL
+    }));
+  }
+
+  async deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }> {
+    // First, verify the instructor owns the course
+    const courseResult = await sql`SELECT instructor_id FROM courses WHERE id = ${courseId}`;
+    if (courseResult.length === 0) {
+      return { success: false, message: "Course not found." };
+    }
+    if (courseResult[0].instructor_id !== instructorId) {
+      return { success: false, message: "You are not authorized to delete this course." };
+    }
+
+    // For this task, simple delete. In a real app, consider related data & archival.
+    // Assumes DB schema has cascade deletes for lessons, quizzes, enrollments related to this course,
+    // or they need to be handled here manually.
+    // For example, before deleting course:
+    // await sql`DELETE FROM lesson_progress WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId})`;
+    // await sql`DELETE FROM quiz_attempts WHERE quiz_id IN (SELECT id FROM quizzes WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId}))`;
+    // await sql`DELETE FROM quizzes WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId})`;
+    // await sql`DELETE FROM lessons WHERE course_id = ${courseId}`;
+    // await sql`DELETE FROM enrollments WHERE course_id = ${courseId}`;
+    
+    const result = await sql`DELETE FROM courses WHERE id = ${courseId} RETURNING id`;
+    if (result.count > 0) {
+      return { success: true };
+    }
+    return { success: false, message: "Failed to delete course." };
   }
 }
 
