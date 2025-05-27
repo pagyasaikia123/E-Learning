@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { randomBytes } from "crypto";
 import { storage } from "./storage";
+import { sendVerificationEmail } from "./email";
 import { 
   insertUserSchema, 
   insertCourseSchema, 
@@ -22,12 +24,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (existingUser) {
         return res.status(400).json({ message: "User already exists" });
       }
+
+      const emailVerificationToken = randomBytes(32).toString('hex');
+      const userToCreate = {
+        ...userData,
+        emailVerified: false,
+        emailVerificationToken,
+      };
       
-      const user = await storage.createUser(userData);
+      const user = await storage.createUser(userToCreate);
+
+      if (user.email && user.emailVerificationToken) {
+        await sendVerificationEmail(user.email, user.emailVerificationToken);
+      }
+      
       const { password, ...userWithoutPassword } = user;
       res.json(userWithoutPassword);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/auth/verify-email", async (req, res) => {
+    try {
+      const { token } = req.query;
+
+      if (!token || typeof token !== 'string') {
+        return res.status(400).json({ message: "Verification token is required." });
+      }
+
+      const user = await storage.getUserByVerificationToken(token);
+
+      if (!user) {
+        return res.status(404).json({ message: "Invalid or expired verification token." });
+      }
+
+      if (user.emailVerified) {
+        return res.status(200).json({ message: "Email already verified. You can log in." });
+      }
+
+      const updatedUser = await storage.updateUserVerificationStatus(user.id, true, null);
+
+      if (!updatedUser) {
+        // This case should ideally not happen if the user was found before
+        return res.status(500).json({ message: "Failed to update user verification status." });
+      }
+
+      res.json({ message: "Email verified successfully. You can now log in." });
+    } catch (error: any) {
+      console.error("Email verification error:", error);
+      res.status(500).json({ message: "Internal server error during email verification." });
     }
   });
 
@@ -38,6 +84,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await storage.getUserByEmail(email);
       if (!user || user.password !== password) {
         return res.status(401).json({ message: "Invalid credentials" });
+      }
+
+      if (!user.emailVerified) {
+        return res.status(401).json({ message: "Please verify your email before logging in." });
       }
       
       const { password: _, ...userWithoutPassword } = user;
