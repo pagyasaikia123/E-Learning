@@ -21,6 +21,8 @@ export interface IStorage {
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  getUserByVerificationToken(token: string): Promise<User | undefined>;
+  updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined>;
   
   // Course operations
   getCourses(limit?: number, offset?: number, category?: string, search?: string): Promise<CourseWithInstructor[]>;
@@ -255,6 +257,23 @@ export class MemStorage implements IStorage {
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     return Array.from(this.users.values()).find(user => user.email === email);
+  }
+
+  async getUserByVerificationToken(token: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => user.emailVerificationToken === token);
+  }
+
+  async updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined> {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+
+    const updatedUser = {
+      ...user,
+      emailVerified,
+      emailVerificationToken: verificationToken,
+    };
+    this.users.set(userId, updatedUser);
+    return updatedUser;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
@@ -553,6 +572,8 @@ export class DatabaseStorage implements IStorage {
         email VARCHAR(255) UNIQUE NOT NULL,
         role VARCHAR(50) DEFAULT 'student',
         avatar TEXT,
+        email_verified BOOLEAN DEFAULT FALSE NOT NULL,
+        email_verification_token TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `;
@@ -641,20 +662,20 @@ export class DatabaseStorage implements IStorage {
 
     // Insert demo users
     const [instructor1] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
-      VALUES ('sarah_johnson', 'password123', 'Sarah', 'Johnson', 'sarah@example.com', 'instructor', 'https://images.unsplash.com/photo-1494790108755-2616b612b8c5?w=100&h=100&fit=crop&crop=face')
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
+      VALUES ('sarah_johnson', 'password123', 'Sarah', 'Johnson', 'sarah@example.com', 'instructor', 'https://images.unsplash.com/photo-1494790108375-2616b612b8c5?w=100&h=100&fit=crop&crop=face', TRUE)
       RETURNING *
     `;
 
     const [instructor2] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
-      VALUES ('michael_chen', 'password123', 'Dr. Michael', 'Chen', 'michael@example.com', 'instructor', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face')
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
+      VALUES ('michael_chen', 'password123', 'Dr. Michael', 'Chen', 'michael@example.com', 'instructor', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face', TRUE)
       RETURNING *
     `;
 
     const [student] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
-      VALUES ('john_doe', 'password123', 'John', 'Doe', 'john@example.com', 'student', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face')
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
+      VALUES ('john_doe', 'password123', 'John', 'Doe', 'john@example.com', 'student', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face', FALSE)
       RETURNING *
     `;
 
@@ -739,6 +760,53 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
+      createdAt: user.created_at
+    };
+  }
+
+  async getUserByVerificationToken(token: string): Promise<User | undefined> {
+    const result = await sql`SELECT * FROM users WHERE email_verification_token = ${token}`;
+    if (result.length === 0) return undefined;
+
+    const user = result[0];
+    return {
+      id: user.id,
+      username: user.username,
+      password: user.password,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
+      createdAt: user.created_at
+    };
+  }
+
+  async updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined> {
+    const [user] = await sql`
+      UPDATE users
+      SET email_verified = ${emailVerified}, email_verification_token = ${verificationToken}
+      WHERE id = ${userId}
+      RETURNING *
+    `;
+
+    if (!user) return undefined;
+
+    return {
+      id: user.id,
+      username: user.username,
+      password: user.password,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
@@ -757,6 +825,8 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
@@ -775,14 +845,16 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
-      VALUES (${insertUser.username}, ${insertUser.password}, ${insertUser.firstName}, ${insertUser.lastName}, ${insertUser.email}, ${insertUser.role || 'student'}, ${insertUser.avatar || null})
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified, email_verification_token)
+      VALUES (${insertUser.username}, ${insertUser.password}, ${insertUser.firstName}, ${insertUser.lastName}, ${insertUser.email}, ${insertUser.role || 'student'}, ${insertUser.avatar || null}, ${insertUser.emailVerified || false}, ${insertUser.emailVerificationToken || null})
       RETURNING *
     `;
     
@@ -795,6 +867,8 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
+      emailVerified: user.email_verified,
+      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
