@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
-import { useAuth } from "@/contexts/AuthContext"; // Added useAuth
 import { 
   ArrowLeft, 
   CheckCircle, 
@@ -23,87 +22,71 @@ import VideoPlayer from "@/components/video-player";
 import QuizModal from "@/components/quiz-modal";
 import ProgressBar from "@/components/progress-bar";
 import { formatDuration } from "@/lib/utils";
-import type { LessonWithQuiz, CourseWithInstructor, LessonProgress, QuizAnswer, QuizAttempt } from "@shared/schema"; // Added QuizAnswer, QuizAttempt
+import type { LessonWithQuiz, CourseWithInstructor, LessonProgress } from "@shared/schema";
+
+// Mock user ID - in a real app this would come from auth context
+const CURRENT_USER_ID = 3;
 
 export default function Lesson() {
   const { id } = useParams<{ id: string }>();
-  const { user: authUser, isLoading: authLoading } = useAuth(); // Get authUser
   const lessonId = parseInt(id!);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [showQuiz, setShowQuiz] = useState(false);
   const [watchTime, setWatchTime] = useState(0);
-  const [quizAttemptResult, setQuizAttemptResult] = useState<QuizAttempt | null>(null); // New state
 
-  const { data: lesson, isLoading: lessonIsLoading } = useQuery<LessonWithQuiz>({ // Renamed isLoading to avoid conflict
+  const { data: lesson, isLoading } = useQuery<LessonWithQuiz>({
     queryKey: [`/api/lessons/${lessonId}`],
-    enabled: !authLoading && !!authUser?.id, // Ensure authUser is loaded before fetching
   });
 
   const { data: course } = useQuery<CourseWithInstructor>({
     queryKey: [`/api/courses/${lesson?.courseId}`],
-    enabled: !!lesson?.courseId && !authLoading && !!authUser?.id,
+    enabled: !!lesson?.courseId,
   });
 
   const { data: allLessons } = useQuery<LessonWithQuiz[]>({
     queryKey: [`/api/courses/${lesson?.courseId}/lessons`],
-    enabled: !!lesson?.courseId && !authLoading && !!authUser?.id,
+    enabled: !!lesson?.courseId,
   });
 
   const { data: progress } = useQuery<LessonProgress>({
-    queryKey: [`/api/users/${authUser?.id}/lessons/${lessonId}/progress`],
-    enabled: !!lessonId && !!authUser?.id && !authLoading,
+    queryKey: [`/api/users/${CURRENT_USER_ID}/lessons/${lessonId}/progress`],
+    enabled: !!lessonId,
   });
 
   const updateProgressMutation = useMutation({
-    mutationFn: (data: { completed?: boolean; watchTime?: number }) => {
-      if (!authUser?.id) throw new Error("User not authenticated");
-      return apiRequest('POST', '/api/lesson-progress', {
-        userId: authUser.id,
+    mutationFn: (data: { completed?: boolean; watchTime?: number }) =>
+      apiRequest('POST', '/api/lesson-progress', {
+        userId: CURRENT_USER_ID,
         lessonId,
         completed: data.completed ?? progress?.completed ?? false,
         watchTime: data.watchTime ?? watchTime,
-      });
-    },
+      }),
     onSuccess: () => {
-      if (!authUser?.id) return;
       queryClient.invalidateQueries({ 
-        queryKey: [`/api/users/${authUser.id}/lessons/${lessonId}/progress`] 
+        queryKey: [`/api/users/${CURRENT_USER_ID}/lessons/${lessonId}/progress`] 
       });
       queryClient.invalidateQueries({ 
-        queryKey: [`/api/users/${authUser.id}/enrollments`] 
+        queryKey: [`/api/users/${CURRENT_USER_ID}/enrollments`] 
       });
     },
   });
 
   const submitQuizMutation = useMutation({
-    mutationFn: (data: { clientAnswers: QuizAnswer[]; timeSpent: number }) => {
-      if (!authUser?.id || !lesson?.quiz?.id) {
-        throw new Error("User or Quiz not available for submission.");
-      }
-      return apiRequest<QuizAttempt>('POST', '/api/quiz-attempts', { // Expect QuizAttempt in response
-        userId: authUser.id,
-        quizId: lesson.quiz.id,
-        answers: data.clientAnswers,
-        timeSpent: data.timeSpent,
-      });
-    },
-    onSuccess: (data) => { // `data` here is the QuizAttempt from backend
-      setQuizAttemptResult(data); // Store the full attempt result
-      setShowQuiz(true); // Keep modal open or reopen to show results
+    mutationFn: (data: { score: number; answers: number[] }) =>
+      apiRequest('POST', '/api/quiz-attempts', {
+        userId: CURRENT_USER_ID,
+        quizId: lesson?.quiz?.id,
+        score: data.score,
+        answers: data.answers,
+      }),
+    onSuccess: (_, variables) => {
       toast({
-        title: "Quiz Submitted!",
-        description: `Your score: ${data.score}%. ${data.passed ? "You passed!" : "Please try again."}`,
-        variant: data.passed ? "default" : "destructive",
+        title: "Quiz completed!",
+        description: `You scored ${variables.score}%`,
       });
+      setShowQuiz(false);
     },
-    onError: (error: any) => {
-      toast({
-        title: "Quiz Submission Failed",
-        description: error.message || "An unexpected error occurred.",
-        variant: "destructive",
-      });
-    }
   });
 
   useEffect(() => {
@@ -150,20 +133,7 @@ export default function Lesson() {
   const previousLesson = currentLessonIndex > 0 ? allLessons?.[currentLessonIndex - 1] : null;
   const nextLesson = currentLessonIndex < (allLessons?.length ?? 0) - 1 ? allLessons?.[currentLessonIndex + 1] : null;
 
-  const handleOpenQuizModal = () => {
-    setQuizAttemptResult(null); // Reset previous attempt results before opening
-    setShowQuiz(true);
-  };
-
-  const handleCloseQuizModal = () => {
-    setShowQuiz(false);
-    // Optionally, reset quizAttemptResult here if results should not persist after modal close
-    // For now, results will persist until a new quiz is taken or page reloads.
-    // If retake is implemented, quizAttemptResult should be reset then.
-  };
-
-
-  if (authLoading || lessonIsLoading) { // Check authLoading as well
+  if (isLoading) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -408,11 +378,10 @@ export default function Lesson() {
         <QuizModal
           quiz={lesson.quiz}
           isOpen={showQuiz}
-          onClose={handleCloseQuizModal} // Updated
-          onComplete={(clientAnswers, timeSpent) => {
-            submitQuizMutation.mutate({ clientAnswers, timeSpent });
+          onClose={() => setShowQuiz(false)}
+          onComplete={(score, answers) => {
+            submitQuizMutation.mutate({ score, answers });
           }}
-          attemptResult={quizAttemptResult} // Pass the result
         />
       )}
     </div>

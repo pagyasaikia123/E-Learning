@@ -1,8 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { randomBytes } from "crypto";
 import { storage } from "./storage";
-import { sendVerificationEmail } from "./email";
 import { 
   insertUserSchema, 
   insertCourseSchema, 
@@ -10,14 +8,7 @@ import {
   insertQuizSchema,
   insertEnrollmentSchema,
   insertLessonProgressSchema,
-  insertQuizAttemptSchema,
-  ActivityItem, 
-  CertificateItem,
-  QuizQuestion, // Added for accessing question details
-  QuizAnswer, // Added for processedAnswers
-  MultipleChoiceQuestion, // Specific question types
-  TrueFalseQuestion,
-  FillBlankQuestion
+  insertQuizAttemptSchema
 } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -31,56 +22,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (existingUser) {
         return res.status(400).json({ message: "User already exists" });
       }
-
-      const emailVerificationToken = randomBytes(32).toString('hex');
-      const userToCreate = {
-        ...userData,
-        emailVerified: false,
-        emailVerificationToken,
-      };
       
-      const user = await storage.createUser(userToCreate);
-
-      if (user.email && user.emailVerificationToken) {
-        await sendVerificationEmail(user.email, user.emailVerificationToken);
-      }
-      
+      const user = await storage.createUser(userData);
       const { password, ...userWithoutPassword } = user;
       res.json(userWithoutPassword);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.get("/api/auth/verify-email", async (req, res) => {
-    try {
-      const { token } = req.query;
-
-      if (!token || typeof token !== 'string') {
-        return res.status(400).json({ message: "Verification token is required." });
-      }
-
-      const user = await storage.getUserByVerificationToken(token);
-
-      if (!user) {
-        return res.status(404).json({ message: "Invalid or expired verification token." });
-      }
-
-      if (user.emailVerified) {
-        return res.status(200).json({ message: "Email already verified. You can log in." });
-      }
-
-      const updatedUser = await storage.updateUserVerificationStatus(user.id, true, null);
-
-      if (!updatedUser) {
-        // This case should ideally not happen if the user was found before
-        return res.status(500).json({ message: "Failed to update user verification status." });
-      }
-
-      res.json({ message: "Email verified successfully. You can now log in." });
-    } catch (error: any) {
-      console.error("Email verification error:", error);
-      res.status(500).json({ message: "Internal server error during email verification." });
     }
   });
 
@@ -91,10 +38,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await storage.getUserByEmail(email);
       if (!user || user.password !== password) {
         return res.status(401).json({ message: "Invalid credentials" });
-      }
-
-      if (!user.emailVerified) {
-        return res.status(401).json({ message: "Please verify your email before logging in." });
       }
       
       const { password: _, ...userWithoutPassword } = user;
@@ -163,52 +106,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/courses", async (req, res) => {
     try {
-      const courseData = insertCourseSchema.parse(req.body);
-      const course = await storage.createCourse(courseData);
+      // @ts-ignore // Assuming req.user is populated by auth middleware
+      const user = req.user; 
+
+      if (!user || user.role !== 'instructor') {
+        return res.status(403).json({ message: "Forbidden: Only instructors can create courses." });
+      }
+
+      // instructorId from payload is ignored; taken from authenticated user
+      const courseDataFromClient = insertCourseSchema.parse(req.body); // insertCourseSchema now omits instructorId
+      
+      // instructorId is now passed as a separate argument to storage.createCourse
+      const course = await storage.createCourse(courseDataFromClient, user.id);
       res.status(201).json(course);
     } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.put("/api/courses/:id", async (req, res) => {
-    try {
-      const courseId = parseInt(req.params.id);
-      // For updates, we use partial schema and ensure instructorId is not changed via body
-      const courseData = insertCourseSchema.partial().parse(req.body);
-      
-      // TODO: Add authentication and authorization here
-      // For now, assuming the update is valid and allowed
-      // const authUserId = (req as any).user?.id; // Example if auth middleware adds user
-      // const existingCourse = await storage.getCourse(courseId);
-      // if (existingCourse?.instructorId !== authUserId) {
-      //   return res.status(403).json({ message: "You are not authorized to update this course." });
-      // }
-
-      const updatedCourse = await storage.updateCourse(courseId, courseData);
-      if (!updatedCourse) {
-        return res.status(404).json({ message: "Course not found or update failed" });
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ message: "Invalid course data.", errors: error.errors });
       }
-      res.json(updatedCourse);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.delete("/api/courses/:id", async (req, res) => {
-    try {
-      const courseId = parseInt(req.params.id);
-      // TODO: Add authentication and get instructorId from authenticated user
-      const instructorId = 1; // Placeholder - replace with actual authenticated instructor ID
-      
-      const result = await storage.deleteCourse(courseId, instructorId);
-      if (!result.success) {
-        // Use 404 for not found, 403 for authorization issues if distinguishable
-        return res.status(result.message === "Course not found." ? 404 : 403).json({ message: result.message });
-      }
-      res.status(200).json({ message: "Course deleted successfully" });
-    } catch (error: any) {
-      res.status(500).json({ message: "Internal server error" });
+      console.error("Error creating course:", error);
+      res.status(500).json({ message: "Failed to create course." });
     }
   });
 
@@ -221,65 +137,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(400).json({ message: error.message });
     }
   });
-
-  // Student Dashboard Specific Routes
-  app.get("/api/users/:id/activity", async (req, res) => {
-    try {
-      const userId = parseInt(req.params.id);
-      const limit = parseInt(req.query.limit as string) || 10;
-      // TODO: Ensure the authenticated user is requesting their own activity or is an admin/instructor
-      const activity = await storage.getUserActivity(userId, limit);
-      res.json(activity);
-    } catch (error: any) {
-      console.error("Failed to get user activity:", error);
-      res.status(500).json({ message: "Failed to get user activity" });
-    }
-  });
-
-  app.get("/api/users/:id/certificates", async (req, res) => {
-    try {
-      const userId = parseInt(req.params.id);
-      // TODO: Ensure the authenticated user is requesting their own certificates or is an admin/instructor
-      const certificates = await storage.getUserCertificates(userId);
-      res.json(certificates);
-    } catch (error: any) {
-      console.error("Failed to get user certificates:", error);
-      res.status(500).json({ message: "Failed to get user certificates" });
-    }
-  });
-
-  // Instructor Analytics Placeholder Routes
-  app.get("/api/instructors/:id/analytics/revenue", (req, res) => {
-    const { period = 'monthly' } = req.query;
-    // Mock data - replace with real analytics logic
-    res.json({ 
-      period,
-      data: [
-        { date: '2023-01-01', revenue: 1200 }, { date: '2023-02-01', revenue: 1500 },
-        { date: '2023-03-01', revenue: 1800 }, { date: '2023-04-01', revenue: 1400 },
-      ] 
-    });
-  });
-
-  app.get("/api/instructors/:id/analytics/top-courses", (req, res) => {
-    const { sortBy = 'revenue' } = req.query;
-    // Mock data - replace with real analytics logic
-    res.json([
-      { id: 1, title: 'Complete Web Development Bootcamp', metric: sortBy === 'revenue' ? 500000 : 324 },
-      { id: 2, title: 'Data Science Fundamentals', metric: sortBy === 'revenue' ? 300000 : 156 },
-      { id: 3, title: 'Mobile App Design Masterclass', metric: sortBy === 'revenue' ? 250000 : 100 },
-    ]);
-  });
-
-  app.get("/api/instructors/:id/analytics/engagement", (req, res) => {
-    // Mock data - replace with real analytics logic
-    res.json({
-      averageCompletionRate: 65, // percentage
-      totalHoursLearned: 1200,
-      activeStudents: 450,
-    });
-  });
-
 
   // Lesson routes
   app.get("/api/courses/:id/lessons", async (req, res) => {
@@ -309,211 +166,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/lessons", async (req, res) => {
     try {
+      // @ts-ignore
+      const user = req.user;
+      if (!user || user.role !== 'instructor') {
+        return res.status(403).json({ message: "Forbidden: Only instructors can create lessons." });
+      }
+
       const lessonData = insertLessonSchema.parse(req.body);
+
+      const course = await storage.getCourse(lessonData.courseId);
+      if (!course) {
+        return res.status(404).json({ message: "Course not found for this lesson." });
+      }
+
+      if (course.instructorId !== user.id) {
+        return res.status(403).json({ message: "Forbidden: You do not own the course this lesson belongs to." });
+      }
+
       const lesson = await storage.createLesson(lessonData);
       res.status(201).json(lesson);
     } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ message: "Invalid lesson data.", errors: error.errors });
+      }
+      console.error("Error creating lesson:", error);
+      res.status(500).json({ message: "Failed to create lesson." });
     }
   });
 
   // Quiz routes
   app.post("/api/quizzes", async (req, res) => {
     try {
+      // @ts-ignore
+      const user = req.user;
+      if (!user || user.role !== 'instructor') {
+        return res.status(403).json({ message: "Forbidden: Only instructors can create quizzes." });
+      }
+
       const quizData = insertQuizSchema.parse(req.body);
+
+      const lesson = await storage.getLesson(quizData.lessonId);
+      if (!lesson) {
+        return res.status(404).json({ message: "Lesson not found for this quiz." });
+      }
+
+      const course = await storage.getCourse(lesson.courseId);
+      if (!course) {
+        // This implies a data integrity issue if a lesson exists without a course.
+        return res.status(500).json({ message: "Course associated with the lesson not found." });
+      }
+
+      if (course.instructorId !== user.id) {
+        return res.status(403).json({ message: "Forbidden: You do not own the course this quiz belongs to." });
+      }
+      
       const quiz = await storage.createQuiz(quizData);
       res.status(201).json(quiz);
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ message: "Invalid quiz data.", errors: error.errors });
+      }
+      console.error("Error creating quiz:", error);
+      res.status(500).json({ message: "Failed to create quiz." });
+    }
+  });
+
+  app.get("/api/quizzes/:id/attempts", async (req, res) => {
+    try {
+      const quizId = parseInt(req.params.id);
+      const userId = parseInt(req.query.userId as string);
+      
+      if (!userId) {
+        return res.status(400).json({ message: "userId is required" });
+      }
+      
+      const attempts = await storage.getQuizAttempts(userId, quizId);
+      res.json(attempts);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   });
 
-  // Changed route: GET /api/users/:userId/quizzes/:quizId/attempts
-  app.get("/api/users/:userId/quizzes/:quizId/attempts", async (req, res) => {
-    try {
-      const userId = parseInt(req.params.userId);
-      const quizId = parseInt(req.params.quizId);
-
-      if (isNaN(userId) || isNaN(quizId)) {
-        return res.status(400).json({ message: "Invalid userId or quizId." });
-      }
-      
-      // TODO: Add authorization to ensure the requesting user can view these attempts
-      // For example, if (req.user.id !== userId && req.user.role !== 'admin') return res.status(403).json(...);
-
-      const attempts = await storage.getQuizAttempts(userId, quizId);
-      res.json(attempts);
-    } catch (error: any) {
-      console.error(`Error fetching quiz attempts for user ${req.params.userId}, quiz ${req.params.quizId}:`, error);
-      res.status(500).json({ message: "Failed to retrieve quiz attempts." });
-    }
-  });
-
   app.post("/api/quiz-attempts", async (req, res) => {
     try {
-      // 1. Validate incoming data (userId, quizId, answers, timeSpent)
-      // The `score`, `totalQuestions`, `correctAnswers`, `passed` will be calculated here.
-      const { userId, quizId, answers: studentAnswers, timeSpent } = insertQuizAttemptSchema.omit({ 
-        score: true, 
-        totalQuestions: true, 
-        correctAnswers: true, 
-        passed: true 
-      }).parse(req.body);
-
-      // 2. Fetch Quiz Data
-      const quiz = await storage.getQuizByLesson(quizId); // Assuming getQuizByLesson fetches the quiz by its ID directly.
-                                                          // If not, we might need a getQuizById method.
-                                                          // For now, if quizId is unique, getQuizByLesson(quizId) might work if lessonId is treated as quizId by mistake in naming.
-                                                          // Let's assume quizId is what getQuizByLesson expects, or a new getQuiz(quizId) method is available.
-      
-      // A more robust way would be to have a specific function `storage.getQuiz(quizId)`
-      // For this task, let's assume `storage.getQuizByLesson` can find a quiz by its `quizId` if `lessonId` in its definition is actually `quizId`.
-      // This is a common ambiguity. If it's strictly by lessonId, then this logic needs quiz.lessonId to get the quiz,
-      // which means the client should send lessonId or the quizId should be enough to get the Quiz.
-      // Given the structure, `quizId` is the primary key for quizzes. So, we need a `storage.getQuiz(id)` method.
-      // Let's assume `storage.getQuiz(quizId)` exists or adapt `getQuizByLesson` if it can serve this purpose.
-      // For the purpose of this task, I will proceed as if `storage.getQuiz(quizId)` is the intended method.
-      // Since it's not in IStorage, I'll use getQuizByLesson and assume it gets the quiz by its ID for now.
-      // A proper fix would be to add `getQuiz(id: number): Promise<Quiz | undefined>` to IStorage.
-      
-      // To make this work with current IStorage, we'd need to fetch all quizzes for a lesson, then filter.
-      // Or, assume the client sends lessonId with quizId, or the quizId is enough.
-      // The prompt implies quizId is sufficient. Let's find the quiz based on its ID, which might be what getQuizByLesson does if it takes quiz ID.
-      // The prompt for getQuizByLesson was "getQuizByLesson(lessonId: number): Promise<Quiz | undefined>;"
-      // This is problematic. I will mock fetching the quiz directly for now.
-      
-      let fetchedQuiz = await storage.getQuizByLesson(quizId); // This is likely incorrect based on name.
-      // If the above is wrong, we need a new storage method. For now, let's assume it finds the quiz by its ID.
-      // A better approach:
-      // const lesson = await storage.getLesson(some_lesson_id_if_available);
-      // const fetchedQuiz = lesson?.quiz;
-      // Or, ideally: const fetchedQuiz = await storage.getQuiz(quizId);
-      
-      // Given the constraints and to proceed, I will simulate fetching the quiz questions directly if the above fails.
-      // This is a workaround due to the potential ambiguity of `getQuizByLesson`.
-      // In a real scenario, `storage.getQuiz(quizId)` would be the correct method.
-      if (!fetchedQuiz) {
-         // Attempt to find the quiz from all courses and lessons if not found by getQuizByLesson(quizId)
-         // This is highly inefficient and a placeholder for a direct quiz fetch method.
-         const allCourses = await storage.getCourses(1000, 0); // get all courses
-         for (const course of allCourses) {
-            const lessons = await storage.getLessonsByourse(course.id);
-            for (const lesson of lessons) {
-                if (lesson.quiz && lesson.quiz.id === quizId) {
-                    fetchedQuiz = lesson.quiz;
-                    break;
-                }
-            }
-            if (fetchedQuiz) break;
-         }
-      }
-
-
-      if (!fetchedQuiz || !fetchedQuiz.questions) {
-        return res.status(404).json({ message: "Quiz not found or has no questions." });
-      }
-      const serverQuestions = fetchedQuiz.questions as QuizQuestion[]; // Cast to the correct type
-
-      // 3. Initialize Grading Variables
-      let totalScore = 0;
-      let totalCorrectAnswers = 0;
-      let totalPossiblePoints = 0;
-      const processedAnswers: QuizAnswer[] = [];
-
-      // 4. Iterate and Grade Answers
-      for (const serverQuestion of serverQuestions) {
-        totalPossiblePoints += serverQuestion.points;
-        const studentAnswerObj = studentAnswers.find(sa => sa.questionId === serverQuestion.id);
-        let isCorrect = false;
-        let pointsEarned = 0;
-
-        if (studentAnswerObj && studentAnswerObj.answer !== undefined && studentAnswerObj.answer !== null) {
-          switch (serverQuestion.type) {
-            case 'multiple-choice':
-              const mcq = serverQuestion as MultipleChoiceQuestion;
-              // Assuming studentAnswerObj.answer is the index of the chosen option
-              if (typeof studentAnswerObj.answer === 'number' && studentAnswerObj.answer === mcq.correctAnswer) {
-                isCorrect = true;
-              }
-              // Handle if studentAnswerObj.answer is the string value of the option (less common for MCQs)
-              else if (typeof studentAnswerObj.answer === 'string' && mcq.options[mcq.correctAnswer] === studentAnswerObj.answer) {
-                 isCorrect = true;
-              }
-              break;
-            case 'true-false':
-              const tfq = serverQuestion as TrueFalseQuestion;
-              if (typeof studentAnswerObj.answer === 'boolean' && studentAnswerObj.answer === tfq.correctAnswer) {
-                isCorrect = true;
-              }
-              break;
-            case 'fill-blank':
-              const fbq = serverQuestion as FillBlankQuestion;
-              const studentFillAnswer = String(studentAnswerObj.answer).trim();
-              if (fbq.caseSensitive) {
-                if (fbq.correctAnswers.includes(studentFillAnswer)) {
-                  isCorrect = true;
-                }
-              } else {
-                if (fbq.correctAnswers.some(ca => ca.toLowerCase() === studentFillAnswer.toLowerCase())) {
-                  isCorrect = true;
-                }
-              }
-              break;
-            // Placeholder for 'matching' and 'essay' - not auto-graded
-            case 'matching':
-            case 'essay':
-            default:
-              // These types are not auto-graded for now.
-              // isCorrect remains false, pointsEarned remains 0.
-              // studentAnswerObj.answer will be stored as is.
-              break;
-          }
-        }
-
-        if (isCorrect) {
-          pointsEarned = serverQuestion.points;
-          totalScore += pointsEarned;
-          totalCorrectAnswers++;
-        }
-        
-        processedAnswers.push({
-          questionId: serverQuestion.id,
-          type: serverQuestion.type,
-          answer: studentAnswerObj ? studentAnswerObj.answer : null, // Store what the student submitted or null
-          isCorrect: isCorrect,
-          pointsEarned: pointsEarned,
-          // Optionally include serverQuestion.explanation here if needed in the attempt result
-        });
-      }
-
-      // 5. Calculate Final Score and Status
-      const scorePercentage = totalPossiblePoints > 0 ? Math.round((totalScore / totalPossiblePoints) * 100) : 0;
-      const passed = scorePercentage >= (fetchedQuiz.passingScore || 70);
-
-      // 6. Prepare Data for Storage
-      const attemptToStore: Omit<typeof insertQuizAttemptSchema._input, 'id' | 'completedAt'> = {
-        userId: userId,
-        quizId: quizId,
-        answers: processedAnswers, // Storing the processed answers with correctness and points
-        score: scorePercentage,
-        totalQuestions: serverQuestions.length,
-        correctAnswers: totalCorrectAnswers,
-        passed: passed,
-        timeSpent: timeSpent || 0, // Ensure timeSpent is provided or defaults to 0
-      };
-      
-      // 7. Store the Attempt
-      const createdAttempt = await storage.createQuizAttempt(attemptToStore);
-
-      // 8. Return Response
-      res.status(201).json(createdAttempt);
-
+      const attemptData = insertQuizAttemptSchema.parse(req.body);
+      const attempt = await storage.createQuizAttempt(attemptData);
+      res.status(201).json(attempt);
     } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ message: "Invalid request body.", errors: error.errors });
-      }
-      console.error("Error processing quiz attempt:", error);
-      res.status(500).json({ message: "Failed to process quiz attempt." });
+      res.status(400).json({ message: error.message });
     }
   });
 

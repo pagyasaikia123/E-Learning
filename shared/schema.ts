@@ -11,8 +11,6 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   role: text("role").notNull().default("student"), // 'student' or 'instructor'
   avatar: text("avatar"),
-  emailVerified: boolean("email_verified").default(false).notNull(),
-  emailVerificationToken: text("email_verification_token"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -98,6 +96,7 @@ export const insertCourseSchema = createInsertSchema(courses).omit({
   createdAt: true,
   enrollmentCount: true,
   rating: true,
+  instructorId: true // Add this line
 });
 
 export const insertLessonSchema = createInsertSchema(lessons).omit({
@@ -109,6 +108,72 @@ export const insertQuizSchema = createInsertSchema(quizzes).omit({
   id: true,
   createdAt: true,
 });
+
+// Zod Schemas for Quiz Questions
+const baseQuestionSchema = z.object({
+  id: z.number(), // Keep as number, can be a temporary ID on client before saving
+  type: z.enum(['multiple-choice', 'true-false', 'fill-blank', 'matching', 'essay']),
+  question: z.string().min(1, "Question text cannot be empty"),
+  points: z.number().min(0, "Points cannot be negative").default(1),
+  explanation: z.string().optional(),
+});
+
+const multipleChoiceQuestionSchema = baseQuestionSchema.extend({
+  type: z.literal('multiple-choice'),
+  options: z.array(z.string().min(1, "Option text cannot be empty")).min(2, "Must have at least two options"),
+  correctAnswer: z.number().min(0, "Correct answer index must be valid"),
+  allowMultiple: z.boolean().optional().default(false),
+});
+
+const trueFalseQuestionSchema = baseQuestionSchema.extend({
+  type: z.literal('true-false'),
+  correctAnswer: z.boolean(),
+});
+
+const fillBlankQuestionSchema = baseQuestionSchema.extend({
+  type: z.literal('fill-blank'),
+  correctAnswers: z.array(z.string().min(1, "Correct answer text cannot be empty")).min(1, "Must have at least one correct answer"),
+  caseSensitive: z.boolean().optional().default(false),
+});
+
+const matchingQuestionSchema = baseQuestionSchema.extend({
+  type: z.literal('matching'),
+  leftItems: z.array(z.string().min(1)).min(1),
+  rightItems: z.array(z.string().min(1)).min(1),
+  correctMatches: z.record(z.number(), z.number()), 
+});
+
+const essayQuestionSchema = baseQuestionSchema.extend({
+  type: z.literal('essay'),
+  maxWords: z.number().optional(),
+  rubric: z.string().optional(),
+});
+
+export const quizQuestionSchema = z.discriminatedUnion("type", [
+  multipleChoiceQuestionSchema,
+  trueFalseQuestionSchema,
+  fillBlankQuestionSchema,
+  matchingQuestionSchema,
+  essayQuestionSchema,
+]);
+
+// Update insertQuizSchema to use the detailed question schema
+export const insertQuizSchema = createInsertSchema(quizzes, {
+  questions: z.array(quizQuestionSchema).min(1, "A quiz must have at least one question"),
+  // Ensure other fields have appropriate validation if needed
+  title: z.string().min(1, "Quiz title cannot be empty"),
+  lessonId: z.number(),
+  description: z.string().optional(),
+  timeLimit: z.number().min(0).optional(),
+  passingScore: z.number().min(0).max(100).default(70),
+  allowRetries: z.boolean().default(true),
+  shuffleQuestions: z.boolean().default(false),
+  showCorrectAnswers: z.boolean().default(true),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
 
 export const insertEnrollmentSchema = createInsertSchema(enrollments).omit({
   id: true,
@@ -218,28 +283,4 @@ export interface QuizAnswer {
   answer: any; // Different types based on question type
   isCorrect?: boolean;
   pointsEarned?: number;
-}
-
-// Types for Student Dashboard
-export type ActivityType = 'enrollment' | 'lesson_completion' | 'quiz_attempt' | 'certificate_earned';
-
-export interface ActivityItem {
-  id: string; // Can be composite like 'enrollment-123' or a UUID
-  type: ActivityType;
-  title: string; // e.g., "Enrolled in Introduction to Programming" or "Completed Lesson: Variables"
-  courseTitle?: string; // e.g., "Introduction to Programming"
-  timestamp: string; // ISO date string
-  // Optional fields based on type
-  lessonTitle?: string;
-  quizTitle?: string;
-  score?: number; // For quiz_attempt
-}
-
-export interface CertificateItem {
-  id: string; // Could be enrollmentId or a dedicated certificate ID
-  courseId: number;
-  courseTitle: string;
-  instructorName: string; // Denormalized for easier display
-  completionDate: string; // ISO date string
-  certificateUrl?: string; // Link to the certificate (if applicable)
 }
