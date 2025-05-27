@@ -10,7 +10,9 @@ import {
   insertQuizSchema,
   insertEnrollmentSchema,
   insertLessonProgressSchema,
-  insertQuizAttemptSchema
+  insertQuizAttemptSchema,
+  ActivityItem, // Added
+  CertificateItem // Added
 } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -164,6 +166,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/courses/:id", async (req, res) => {
+    try {
+      const courseId = parseInt(req.params.id);
+      // For updates, we use partial schema and ensure instructorId is not changed via body
+      const courseData = insertCourseSchema.partial().parse(req.body);
+      
+      // TODO: Add authentication and authorization here
+      // For now, assuming the update is valid and allowed
+      // const authUserId = (req as any).user?.id; // Example if auth middleware adds user
+      // const existingCourse = await storage.getCourse(courseId);
+      // if (existingCourse?.instructorId !== authUserId) {
+      //   return res.status(403).json({ message: "You are not authorized to update this course." });
+      // }
+
+      const updatedCourse = await storage.updateCourse(courseId, courseData);
+      if (!updatedCourse) {
+        return res.status(404).json({ message: "Course not found or update failed" });
+      }
+      res.json(updatedCourse);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  app.delete("/api/courses/:id", async (req, res) => {
+    try {
+      const courseId = parseInt(req.params.id);
+      // TODO: Add authentication and get instructorId from authenticated user
+      const instructorId = 1; // Placeholder - replace with actual authenticated instructor ID
+      
+      const result = await storage.deleteCourse(courseId, instructorId);
+      if (!result.success) {
+        // Use 404 for not found, 403 for authorization issues if distinguishable
+        return res.status(result.message === "Course not found." ? 404 : 403).json({ message: result.message });
+      }
+      res.status(200).json({ message: "Course deleted successfully" });
+    } catch (error: any) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   app.get("/api/instructors/:id/courses", async (req, res) => {
     try {
       const instructorId = parseInt(req.params.id);
@@ -173,6 +216,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(400).json({ message: error.message });
     }
   });
+
+  // Student Dashboard Specific Routes
+  app.get("/api/users/:id/activity", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const limit = parseInt(req.query.limit as string) || 10;
+      // TODO: Ensure the authenticated user is requesting their own activity or is an admin/instructor
+      const activity = await storage.getUserActivity(userId, limit);
+      res.json(activity);
+    } catch (error: any) {
+      console.error("Failed to get user activity:", error);
+      res.status(500).json({ message: "Failed to get user activity" });
+    }
+  });
+
+  app.get("/api/users/:id/certificates", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      // TODO: Ensure the authenticated user is requesting their own certificates or is an admin/instructor
+      const certificates = await storage.getUserCertificates(userId);
+      res.json(certificates);
+    } catch (error: any) {
+      console.error("Failed to get user certificates:", error);
+      res.status(500).json({ message: "Failed to get user certificates" });
+    }
+  });
+
+  // Instructor Analytics Placeholder Routes
+  app.get("/api/instructors/:id/analytics/revenue", (req, res) => {
+    const { period = 'monthly' } = req.query;
+    // Mock data - replace with real analytics logic
+    res.json({ 
+      period,
+      data: [
+        { date: '2023-01-01', revenue: 1200 }, { date: '2023-02-01', revenue: 1500 },
+        { date: '2023-03-01', revenue: 1800 }, { date: '2023-04-01', revenue: 1400 },
+      ] 
+    });
+  });
+
+  app.get("/api/instructors/:id/analytics/top-courses", (req, res) => {
+    const { sortBy = 'revenue' } = req.query;
+    // Mock data - replace with real analytics logic
+    res.json([
+      { id: 1, title: 'Complete Web Development Bootcamp', metric: sortBy === 'revenue' ? 500000 : 324 },
+      { id: 2, title: 'Data Science Fundamentals', metric: sortBy === 'revenue' ? 300000 : 156 },
+      { id: 3, title: 'Mobile App Design Masterclass', metric: sortBy === 'revenue' ? 250000 : 100 },
+    ]);
+  });
+
+  app.get("/api/instructors/:id/analytics/engagement", (req, res) => {
+    // Mock data - replace with real analytics logic
+    res.json({
+      averageCompletionRate: 65, // percentage
+      totalHoursLearned: 1200,
+      activeStudents: 450,
+    });
+  });
+
 
   // Lesson routes
   app.get("/api/courses/:id/lessons", async (req, res) => {
