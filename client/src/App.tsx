@@ -10,6 +10,7 @@ import Courses from "@/pages/courses";
 import CourseDetail from "@/pages/course-detail";
 import Lesson from "@/pages/lesson";
 import InstructorDashboard from "@/pages/instructor-dashboard";
+import CourseContentPage from "@/pages/CourseContentPage"; // Added
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/LoginPage"; // Added
 import SignupPage from "@/pages/SignupPage"; // Added
@@ -29,6 +30,7 @@ function Router() {
       <ProtectedRoute path="/courses/:id" component={CourseDetail} />
       <ProtectedRoute path="/lessons/:id" component={Lesson} />
       <ProtectedRoute path="/instructor" component={InstructorDashboard} />
+      <ProtectedRoute path="/instructor/courses/:courseId/content" component={CourseContentPage} /> {/* Added */}
       <Route component={NotFound} />
     </Switch>
   );

@@ -422,12 +422,18 @@ export default function InstructorDashboard() {
                           <Play className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
                           Preview
                         </Button>
-                         <AlertDialogTrigger asChild>
-                          <Button variant="outline" size="sm" className="flex-1 text-red-600 border-red-300 hover:bg-red-50 hover:text-red-700" onClick={() => setCourseToDelete(course)}>
-                            <Trash2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
-                            Delete
-                          </Button>
-                        </AlertDialogTrigger>
+                        <Button variant="outline" size="sm" className="flex-1" onClick={() => setLocation(`/instructor/courses/${course.id}/content`)}>
+                          <BookOpen className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                          Manage Content
+                        </Button>
+                      </div>
+                      <div className="pt-2">
+                        <AlertDialogTrigger asChild>
+                            <Button variant="destructiveOutline" size="sm" className="w-full text-red-600 border-red-300 hover:bg-red-50 hover:text-red-700" onClick={() => setCourseToDelete(course)}>
+                              <Trash2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                              Delete Course
+                            </Button>
+                          </AlertDialogTrigger>
                       </div>
                     </div>
                   </CardContent>
