@@ -21,15 +21,13 @@ export interface IStorage {
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  getUserByVerificationToken(token: string): Promise<User | undefined>;
-  updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined>;
   
   // Course operations
   getCourses(limit?: number, offset?: number, category?: string, search?: string): Promise<CourseWithInstructor[]>;
   getCourse(id: number): Promise<CourseWithInstructor | undefined>;
   getCoursesByInstructor(instructorId: number): Promise<CourseWithInstructor[]>;
-  createCourse(course: InsertCourse): Promise<Course>;
-  updateCourse(id: number, course: Partial<Course>): Promise<Course | undefined>;
+  createCourse(courseData: InsertCourse, instructorId: number): Promise<Course>; // Updated signature
+  updateCourse(courseId: number, courseData: Partial<Course>, instructorId: number): Promise<Course | undefined>;
   
   // Lesson operations
   getLessonsByourse(courseId: number): Promise<LessonWithQuiz[]>;
@@ -51,19 +49,11 @@ export interface IStorage {
   getLessonProgress(userId: number, lessonId: number): Promise<LessonProgress | undefined>;
   updateLessonProgress(progress: InsertLessonProgress): Promise<LessonProgress>;
   getUserStats(userId: number): Promise<UserStats>;
-  getUserActivity(userId: number, limit?: number): Promise<ActivityItem[]>; // Student dashboard
-  getUserCertificates(userId: number): Promise<CertificateItem[]>; // Student dashboard
   
   // Quiz attempts
   createQuizAttempt(attempt: InsertQuizAttempt): Promise<QuizAttempt>;
   getQuizAttempts(userId: number, quizId: number): Promise<QuizAttempt[]>;
-
-  // Instructor dashboard
-  deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }>;
 }
-
-// Import new types from schema
-import { ActivityItem, CertificateItem } from "@shared/schema";
 
 export class MemStorage implements IStorage {
   private users: Map<number, User> = new Map();
@@ -267,23 +257,6 @@ export class MemStorage implements IStorage {
     return Array.from(this.users.values()).find(user => user.email === email);
   }
 
-  async getUserByVerificationToken(token: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(user => user.emailVerificationToken === token);
-  }
-
-  async updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined> {
-    const user = this.users.get(userId);
-    if (!user) return undefined;
-
-    const updatedUser = {
-      ...user,
-      emailVerified,
-      emailVerificationToken: verificationToken,
-    };
-    this.users.set(userId, updatedUser);
-    return updatedUser;
-  }
-
   async createUser(insertUser: InsertUser): Promise<User> {
     const user: User = {
       ...insertUser,
@@ -366,10 +339,11 @@ export class MemStorage implements IStorage {
     });
   }
 
-  async createCourse(insertCourse: InsertCourse): Promise<Course> {
+  async createCourse(courseData: InsertCourse, instructorId: number): Promise<Course> {
     const course: Course = {
-      ...insertCourse,
+      ...courseData,
       id: this.currentCourseId++,
+      instructorId: instructorId, // Set instructorId from parameter
       rating: 0,
       enrollmentCount: 0,
       createdAt: new Date(),
@@ -378,12 +352,20 @@ export class MemStorage implements IStorage {
     return course;
   }
 
-  async updateCourse(id: number, courseUpdate: Partial<Course>): Promise<Course | undefined> {
-    const course = this.courses.get(id);
-    if (!course) return undefined;
+  async updateCourse(courseId: number, courseData: Partial<Course>, instructorId: number): Promise<Course | undefined> {
+    const course = this.courses.get(courseId);
+    if (!course) {
+      return undefined; // Or throw new Error("Course not found");
+    }
+    if (course.instructorId !== instructorId) {
+      throw new Error("Forbidden: You are not the owner of this course.");
+    }
     
-    const updatedCourse = { ...course, ...courseUpdate };
-    this.courses.set(id, updatedCourse);
+    // Ensure instructorId from payload is not used to change ownership
+    const { instructorId: _, ...restOfCourseData } = courseData;
+
+    const updatedCourse = { ...course, ...restOfCourseData };
+    this.courses.set(courseId, updatedCourse);
     return updatedCourse;
   }
 
@@ -564,64 +546,6 @@ export class MemStorage implements IStorage {
       .filter(attempt => attempt.userId === userId && attempt.quizId === quizId)
       .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
   }
-
-  async getUserActivity(userId: number, limit = 10): Promise<ActivityItem[]> {
-    // Mock implementation for MemStorage
-    const activities: ActivityItem[] = [
-      { id: '1', type: 'enrollment', title: 'Enrolled in The Complete Web Developer Course 2.0', courseTitle: 'The Complete Web Developer Course 2.0', timestamp: new Date(Date.now() - 86400000 * 2).toISOString() },
-      { id: '2', type: 'lesson_completion', title: 'Completed Lesson: Introduction to HTML', courseTitle: 'The Complete Web Developer Course 2.0', lessonTitle: 'Introduction to HTML', timestamp: new Date(Date.now() - 86400000).toISOString() },
-      { id: '3', type: 'quiz_attempt', title: 'Attempted Quiz: HTML Basics', courseTitle: 'The Complete Web Developer Course 2.0', quizTitle: 'HTML Basics', score: 85, timestamp: new Date().toISOString() },
-    ];
-    return activities.slice(0, limit);
-  }
-
-  async getUserCertificates(userId: number): Promise<CertificateItem[]> {
-    // Mock implementation for MemStorage
-    const userEnrollments = Array.from(this.enrollments.values()).filter(e => e.userId === userId && e.progress === 100);
-    const certificates: CertificateItem[] = [];
-    for (const enrollment of userEnrollments) {
-      const course = this.courses.get(enrollment.courseId);
-      if (course) {
-        const instructor = this.users.get(course.instructorId);
-        certificates.push({
-          id: `cert-${course.id}-${userId}`,
-          courseId: course.id,
-          courseTitle: course.title,
-          instructorName: instructor ? `${instructor.firstName} ${instructor.lastName}` : 'N/A',
-          completionDate: new Date().toISOString(), // Mock completion date
-          certificateUrl: `/certificates/course/${course.id}/user/${userId}`,
-        });
-      }
-    }
-    return certificates;
-  }
-
-  async deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }> {
-    const course = this.courses.get(courseId);
-    if (!course) {
-      return { success: false, message: "Course not found." };
-    }
-    if (course.instructorId !== instructorId) {
-      return { success: false, message: "You are not authorized to delete this course." };
-    }
-    // Check for enrollments (simplified)
-    const hasEnrollments = Array.from(this.enrollments.values()).some(e => e.courseId === courseId);
-    if (hasEnrollments) {
-        // For MemStorage, we'll allow deletion but in real DB might prevent or archive
-        console.warn(`Course ${courseId} has enrollments but is being deleted in MemStorage.`);
-    }
-
-    this.courses.delete(courseId);
-    // Also delete related lessons and quizzes (simplified)
-    this.lessons.forEach((lesson, id) => {
-      if (lesson.courseId === courseId) this.lessons.delete(id);
-    });
-    this.quizzes.forEach((quiz, id) => {
-        const lesson = Array.from(this.lessons.values()).find(l => l.id === quiz.lessonId && l.courseId === courseId);
-        if(lesson) this.quizzes.delete(id);
-    });
-    return { success: true };
-  }
 }
 
 // Database Storage Implementation
@@ -638,8 +562,6 @@ export class DatabaseStorage implements IStorage {
         email VARCHAR(255) UNIQUE NOT NULL,
         role VARCHAR(50) DEFAULT 'student',
         avatar TEXT,
-        email_verified BOOLEAN DEFAULT FALSE NOT NULL,
-        email_verification_token TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `;
@@ -728,20 +650,20 @@ export class DatabaseStorage implements IStorage {
 
     // Insert demo users
     const [instructor1] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
-      VALUES ('sarah_johnson', 'password123', 'Sarah', 'Johnson', 'sarah@example.com', 'instructor', 'https://images.unsplash.com/photo-1494790108375-2616b612b8c5?w=100&h=100&fit=crop&crop=face', TRUE)
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
+      VALUES ('sarah_johnson', 'password123', 'Sarah', 'Johnson', 'sarah@example.com', 'instructor', 'https://images.unsplash.com/photo-1494790108755-2616b612b8c5?w=100&h=100&fit=crop&crop=face')
       RETURNING *
     `;
 
     const [instructor2] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
-      VALUES ('michael_chen', 'password123', 'Dr. Michael', 'Chen', 'michael@example.com', 'instructor', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face', TRUE)
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
+      VALUES ('michael_chen', 'password123', 'Dr. Michael', 'Chen', 'michael@example.com', 'instructor', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face')
       RETURNING *
     `;
 
     const [student] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified)
-      VALUES ('john_doe', 'password123', 'John', 'Doe', 'john@example.com', 'student', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face', FALSE)
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
+      VALUES ('john_doe', 'password123', 'John', 'Doe', 'john@example.com', 'student', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face')
       RETURNING *
     `;
 
@@ -826,53 +748,6 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
-      createdAt: user.created_at
-    };
-  }
-
-  async getUserByVerificationToken(token: string): Promise<User | undefined> {
-    const result = await sql`SELECT * FROM users WHERE email_verification_token = ${token}`;
-    if (result.length === 0) return undefined;
-
-    const user = result[0];
-    return {
-      id: user.id,
-      username: user.username,
-      password: user.password,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      email: user.email,
-      role: user.role,
-      avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
-      createdAt: user.created_at
-    };
-  }
-
-  async updateUserVerificationStatus(userId: number, emailVerified: boolean, verificationToken: string | null): Promise<User | undefined> {
-    const [user] = await sql`
-      UPDATE users
-      SET email_verified = ${emailVerified}, email_verification_token = ${verificationToken}
-      WHERE id = ${userId}
-      RETURNING *
-    `;
-
-    if (!user) return undefined;
-
-    return {
-      id: user.id,
-      username: user.username,
-      password: user.password,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      email: user.email,
-      role: user.role,
-      avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
@@ -891,8 +766,6 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
@@ -911,16 +784,14 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await sql`
-      INSERT INTO users (username, password, first_name, last_name, email, role, avatar, email_verified, email_verification_token)
-      VALUES (${insertUser.username}, ${insertUser.password}, ${insertUser.firstName}, ${insertUser.lastName}, ${insertUser.email}, ${insertUser.role || 'student'}, ${insertUser.avatar || null}, ${insertUser.emailVerified || false}, ${insertUser.emailVerificationToken || null})
+      INSERT INTO users (username, password, first_name, last_name, email, role, avatar)
+      VALUES (${insertUser.username}, ${insertUser.password}, ${insertUser.firstName}, ${insertUser.lastName}, ${insertUser.email}, ${insertUser.role || 'student'}, ${insertUser.avatar || null})
       RETURNING *
     `;
     
@@ -933,8 +804,6 @@ export class DatabaseStorage implements IStorage {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
-      emailVerified: user.email_verified,
-      emailVerificationToken: user.email_verification_token,
       createdAt: user.created_at
     };
   }
@@ -1114,14 +983,31 @@ export class DatabaseStorage implements IStorage {
     return coursesWithLessons;
   }
 
-  async createCourse(insertCourse: InsertCourse): Promise<Course> {
+  async createCourse(courseData: InsertCourse, instructorId: number): Promise<Course> {
     const [course] = await sql`
       INSERT INTO courses (title, description, instructor_id, category, level, price, thumbnail, duration)
-      VALUES (${insertCourse.title}, ${insertCourse.description}, ${insertCourse.instructorId}, ${insertCourse.category}, ${insertCourse.level}, ${insertCourse.price}, ${insertCourse.thumbnail || null}, ${insertCourse.duration || 0})
+      VALUES (${courseData.title}, ${courseData.description}, ${instructorId}, ${courseData.category}, ${courseData.level}, ${courseData.price}, ${courseData.thumbnail || null}, ${courseData.duration || 0})
       RETURNING *
     `;
 
+    // Map the snake_case result from DB to camelCase Course type
     return {
+      id: course.id,
+      title: course.title,
+      description: course.description,
+      instructorId: course.instructor_id, // ensure this matches the DB column name
+      category: course.category,
+      level: course.level,
+      price: course.price,
+      thumbnail: course.thumbnail,
+      rating: course.rating,
+      enrollmentCount: course.enrollment_count,
+      duration: course.duration,
+      createdAt: course.created_at,
+    };
+  }
+
+  async updateCourse(courseId: number, courseData: Partial<Course>, instructorId: number): Promise<Course | undefined> {
       id: course.id,
       title: course.title,
       description: course.description,
@@ -1137,43 +1023,60 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateCourse(id: number, courseUpdate: Partial<Course>): Promise<Course | undefined> {
-    const updates = [];
-    const values = [];
-    
-    if (courseUpdate.title !== undefined) {
-      updates.push('title = $' + (updates.length + 1));
-      values.push(courseUpdate.title);
+  async updateCourse(courseId: number, courseData: Partial<Course>, instructorId: number): Promise<Course | undefined> {
+    // First, verify ownership
+    const existingCourseResult = await sql`SELECT instructor_id FROM courses WHERE id = ${courseId}`;
+    if (existingCourseResult.length === 0) {
+      return undefined; // Course not found
     }
-    if (courseUpdate.description !== undefined) {
-      updates.push('description = $' + (updates.length + 1));
-      values.push(courseUpdate.description);
+    if (existingCourseResult[0].instructor_id !== instructorId) {
+      throw new Error("Forbidden: You are not the owner of this course.");
+    }
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let valueIndex = 1;
+
+    // Dynamically build the SET part of the query
+    // Ensure instructorId from payload is ignored to prevent changing ownership
+    const { instructorId: _, ...restOfCourseData } = courseData; 
+
+    for (const [key, value] of Object.entries(restOfCourseData)) {
+      if (value !== undefined) {
+        // Map camelCase keys from Course type to snake_case keys in DB
+        const dbKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+        updates.push(`${dbKey} = $${valueIndex++}`);
+        values.push(value);
+      }
     }
     
-    if (updates.length === 0) return undefined;
+    if (updates.length === 0) { // Nothing to update
+        return this.getCourse(courseId); // Return current course data
+    }
     
-    const [course] = await sql`
-      UPDATE courses 
-      SET ${sql.raw(updates.join(', '))} 
-      WHERE id = ${id} 
-      RETURNING *
-    `;
+    values.push(courseId); // For the WHERE id = $N clause
+    const query = `UPDATE courses SET ${updates.join(', ')} WHERE id = $${valueIndex} RETURNING *`;
+    
+    const result = await sql.unsafe(query, values);
+    const updatedDbCourse = result[0];
 
-    if (!course) return undefined;
+    if (!updatedDbCourse) return undefined;
 
+    // Map the snake_case result from DB to camelCase Course type
     return {
-      id: course.id,
-      title: course.title,
-      description: course.description,
-      instructorId: course.instructor_id,
-      category: course.category,
-      level: course.level,
-      price: course.price,
-      thumbnail: course.thumbnail,
-      rating: course.rating,
-      enrollmentCount: course.enrollment_count,
-      duration: course.duration,
-      createdAt: course.created_at
+      id: updatedDbCourse.id,
+      title: updatedDbCourse.title,
+      description: updatedDbCourse.description,
+      instructorId: updatedDbCourse.instructor_id,
+      category: updatedDbCourse.category,
+      level: updatedDbCourse.level,
+      price: updatedDbCourse.price,
+      thumbnail: updatedDbCourse.thumbnail,
+      rating: updatedDbCourse.rating,
+      enrollmentCount: updatedDbCourse.enrollment_count,
+      duration: updatedDbCourse.duration,
+      createdAt: updatedDbCourse.created_at,
+      // Add any other fields from the Course type
     };
   }
 
@@ -1497,78 +1400,8 @@ export class DatabaseStorage implements IStorage {
       quizId: attempt.quiz_id,
       score: attempt.score,
       answers: attempt.answers,
-      completedAt: attempt.completed_at,
-      // Ensure these fields are added if your schema has them
-      totalQuestions: attempt.total_questions, 
-      correctAnswers: attempt.correct_answers,
-      passed: attempt.passed,
-      timeSpent: attempt.time_spent,
+      completedAt: attempt.completed_at
     }));
-  }
-
-  async getUserActivity(userId: number, limit = 10): Promise<ActivityItem[]> {
-    // Mocked DB implementation - returns a fixed list for now
-    // A real implementation would query enrollments, lesson_progress, quiz_attempts, etc.
-    // aggregate them, sort by timestamp, and map to ActivityItem[]
-    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate DB call
-    return [
-      { id: `enrollment-${userId}-1`, type: 'enrollment', title: 'Enrolled in Advanced JavaScript', courseTitle: 'Advanced JavaScript', timestamp: new Date(Date.now() - 86400000 * 5).toISOString() },
-      { id: `lesson-${userId}-1`, type: 'lesson_completion', title: 'Completed: Asynchronous JavaScript', courseTitle: 'Advanced JavaScript', lessonTitle: 'Asynchronous JavaScript', timestamp: new Date(Date.now() - 86400000 * 3).toISOString() },
-      { id: `quiz-${userId}-1`, type: 'quiz_attempt', title: 'Attempted: Promises Quiz', courseTitle: 'Advanced JavaScript', quizTitle: 'Promises Quiz', score: 92, timestamp: new Date(Date.now() - 86400000 * 2).toISOString() },
-      { id: `certificate-${userId}-1`, type: 'certificate_earned', title: 'Earned Certificate: Advanced JavaScript', courseTitle: 'Advanced JavaScript', timestamp: new Date(Date.now() - 86400000).toISOString() },
-    ].slice(0, limit);
-  }
-
-  async getUserCertificates(userId: number): Promise<CertificateItem[]> {
-    const completedEnrollments = await sql`
-      SELECT 
-        e.id as enrollment_id,
-        c.id as course_id, 
-        c.title as course_title, 
-        u.first_name as instructor_first_name, 
-        u.last_name as instructor_last_name,
-        e.enrolled_at as completion_date -- Using enrolled_at as placeholder for completion date
-      FROM enrollments e
-      JOIN courses c ON e.course_id = c.id
-      JOIN users u ON c.instructor_id = u.id
-      WHERE e.user_id = ${userId} AND e.progress = 100
-    `;
-
-    return completedEnrollments.map((row: any) => ({
-      id: `cert-${row.course_id}-${userId}`, // Or use enrollment_id if preferred
-      courseId: row.course_id,
-      courseTitle: row.course_title,
-      instructorName: `${row.instructor_first_name} ${row.instructor_last_name}`,
-      completionDate: new Date(row.completion_date).toISOString(), // Ensure this is the actual completion date
-      certificateUrl: `/placeholder/certificate/${row.enrollment_id}`, // Placeholder URL
-    }));
-  }
-
-  async deleteCourse(courseId: number, instructorId: number): Promise<{ success: boolean; message?: string }> {
-    // First, verify the instructor owns the course
-    const courseResult = await sql`SELECT instructor_id FROM courses WHERE id = ${courseId}`;
-    if (courseResult.length === 0) {
-      return { success: false, message: "Course not found." };
-    }
-    if (courseResult[0].instructor_id !== instructorId) {
-      return { success: false, message: "You are not authorized to delete this course." };
-    }
-
-    // For this task, simple delete. In a real app, consider related data & archival.
-    // Assumes DB schema has cascade deletes for lessons, quizzes, enrollments related to this course,
-    // or they need to be handled here manually.
-    // For example, before deleting course:
-    // await sql`DELETE FROM lesson_progress WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId})`;
-    // await sql`DELETE FROM quiz_attempts WHERE quiz_id IN (SELECT id FROM quizzes WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId}))`;
-    // await sql`DELETE FROM quizzes WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${courseId})`;
-    // await sql`DELETE FROM lessons WHERE course_id = ${courseId}`;
-    // await sql`DELETE FROM enrollments WHERE course_id = ${courseId}`;
-    
-    const result = await sql`DELETE FROM courses WHERE id = ${courseId} RETURNING id`;
-    if (result.count > 0) {
-      return { success: true };
-    }
-    return { success: false, message: "Failed to delete course." };
   }
 }
 
